@@ -363,6 +363,21 @@ local getnilrequired = false
 local autoblock = false
 local history = {}
 local excluding = {}
+local autoExcludeBasics = true
+local basicNamePatterns = {
+	"heartbeat",
+	"ping",
+	"update",
+	"sync",
+	"replicate",
+	"replication",
+	"analytics",
+	"telemetry",
+	"position",
+	"movement",
+	"camera",
+	"input",
+}
 
 -- function info variables
 local funcEnabled = true
@@ -476,6 +491,78 @@ function SimpleSpy:ExcludeRemote(remote)
 		"Instance | string expected, got " .. typeof(remote)
 	)
 	blacklist[remote] = true
+end
+
+--- Enables or disables automatic exclusion of basic/noisy remotes.
+--- @param enabled boolean
+function SimpleSpy:SetBasicFilterEnabled(enabled)
+	assert(typeof(enabled) == "boolean", "boolean expected, got " .. typeof(enabled))
+	autoExcludeBasics = enabled
+end
+
+--- Adds a new name pattern used by the basic filter.
+--- @param pattern string
+function SimpleSpy:AddBasicFilterPattern(pattern)
+	assert(typeof(pattern) == "string", "string expected, got " .. typeof(pattern))
+	pattern = string.lower(pattern)
+	if pattern == "" then
+		return
+	end
+	table.insert(basicNamePatterns, pattern)
+end
+
+--- Clears all name patterns used by the basic filter.
+function SimpleSpy:ClearBasicFilterPatterns()
+	basicNamePatterns = {}
+end
+
+local function nameLooksBasic(remoteName)
+	local lowered = string.lower(remoteName or "")
+	for _, pattern in ipairs(basicNamePatterns) do
+		if string.find(lowered, pattern, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+local function valueLooksBasic(value)
+	local t = typeof(value)
+	if t == "boolean" or t == "number" or t == "nil" then
+		return true
+	end
+	if t == "string" then
+		return #value <= 12
+	end
+	if t == "table" then
+		return next(value) == nil
+	end
+	return false
+end
+
+local function argsLookBasic(args)
+	if #args == 0 then
+		return true
+	end
+	if #args > 2 then
+		return false
+	end
+	for _, arg in ipairs(args) do
+		if not valueLooksBasic(arg) then
+			return false
+		end
+	end
+	return true
+end
+
+local function shouldExcludeRemoteCall(remote, remoteName, args)
+	if blacklist[remote] or blacklist[remoteName] then
+		return true
+	end
+	if not autoExcludeBasics then
+		return false
+	end
+	return nameLooksBasic(remoteName) and argsLookBasic(args)
 end
 
 --- Creates a new ScriptSignal that can be connected to and fired
@@ -2022,7 +2109,7 @@ function hookRemote(remoteType, remote, ...)
 		local validInstance, remoteName = pcall(function()
 			return remote.Name
 		end)
-		if validInstance and not (blacklist[remote] or blacklist[remoteName]) then
+		if validInstance and not shouldExcludeRemoteCall(remote, remoteName, args) then
 			local funcInfo = {}
 			local calling
 			if funcEnabled then
@@ -2097,7 +2184,7 @@ local newnamecall = newcclosure(function(remote, ...)
 		if
 			validInstance
 			and (methodName == "FireServer" or methodName == "fireServer" or methodName == "InvokeServer" or methodName == "invokeServer")
-			and not (blacklist[remote] or blacklist[remoteName])
+			and not shouldExcludeRemoteCall(remote, remoteName, args)
 		then
 			local funcInfo = {}
 			local calling
